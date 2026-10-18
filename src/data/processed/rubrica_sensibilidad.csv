@@ -1,0 +1,8 @@
+,Pesos de la rúbrica,Pesos iguales,Solo prueba 2021-2025,Solo error (MSE),Puesto promedio
+Híbrido,1,1,3,2,1.75
+Gradient boosting,2,2,1,4,2.25
+Random forest,3,3,2,3,2.75
+SVR lineal,4,4,4,1,3.25
+Persistencia,5,5,5,7,5.5
+Climatología,6,6,6,5,5.75
+Dummy (promedio),7,7,7,6,6.75

@@ -733,6 +733,42 @@ def tabla_mse_html(h_sel):
                    "(prueba de Diebold-Mariano, p < 0,05). Sin asterisco, la diferencia puede ser suerte.", className="nota")]
 
 
+MAPA_MODELOS = [
+    ("mm", "Climatología", "Tradicional", "Promedio histórico de esa semana del año. Referencia principal."),
+    ("mm", "Dummy (promedio)", "Tradicional", "Promedio de todas las semanas de entrenamiento."),
+    ("mm", "Persistencia", "Tradicional", "La semana que viene llueve lo mismo que la última semana conocida."),
+    ("mm", "SVR lineal", "Machine Learning", "Modelo base (capítulo 3). Lineal y regularizado."),
+    ("mm", "Random forest", "Machine Learning", "No lineal, para capturar aguaceros (capítulo 4)."),
+    ("mm", "Gradient boosting", "Machine Learning", "Mismo algoritmo que XGBoost. Probado y descartado: último en validación."),
+    ("mm", "Híbrido", "Machine Learning", "SVR + random forest combinados por un juez (capítulo 5). ELEGIDO."),
+]
+
+
+def tabla_mapa_html(h):
+    _, val, pru, _ = cargar_hibrido()
+    V = val[val.h == h].set_index("modelo").MSE
+    T = pru[pru.h == h].set_index("modelo").MSE
+    filas = []
+    for preg, m, tipo, papel in MAPA_MODELOS:
+        nombre = "Híbrido SVR + random forest" if m == "Híbrido" else ("Gradient boosting (≈ XGBoost)" if m == "Gradient boosting" else m)
+        if preg == "mm":
+            res = [html.Td(es(V[m])), html.Td(es(T[m]))]
+        else:
+            res = [html.Td("ver parte 2 (AUC, accuracy)", colSpan=2, className="ic")]
+        clase = "sel" if "ELEGIDO" in papel else ("grupo" if tipo == "Tradicional" else "")
+        filas.append(html.Tr([html.Td(html.B(nombre) if clase == "sel" else nombre), html.Td(tipo), html.Td(papel)] + res,
+                             className=clase))
+    cab = html.Thead(html.Tr([html.Th(x) for x in ("Modelo", "Tipo", "Papel en el estudio",
+                                                   f"MSE validación ({h} sem)", f"MSE prueba ({h} sem)")]))
+    sep = lambda t: html.Tr(html.Td(t, colSpan=5, className="separador"))
+    cuerpo = [sep("Métodos tradicionales")] + filas[:3] + [sep("Machine Learning")] + filas[3:7]
+    return [html.H3("Los 7 modelos evaluados para pronosticar la lluvia de las semanas 1 a 4", className="subtitulo"),
+            html.P("3 métodos tradicionales y 4 de Machine Learning, con las mismas predictoras y la misma validación. "
+                   "MSE en mm²: menor es mejor. La calificación final de cada uno está en la pestaña Análisis final.",
+                   className="nota", style={"marginTop": 0}),
+            html.Div(html.Table([cab, html.Tbody(cuerpo)], className="tabla-metricas tabla-mapa"), className="tabla-scroll")]
+
+
 def panel_criterio():
     _, val, _, pesos = cargar_hibrido()
     V = val.pivot(index="modelo", columns="h", values="MSE").loc[MODELOS_MM].mean(axis=1).sort_values()
@@ -789,7 +825,7 @@ def fig_mse_horizontes(h_sel):
     return fig
 
 
-def fig_serie_hibrido(h):
+def fig_serie_hibrido(h, modelo="Híbrido"):
     prueba, _, _, _ = cargar_hibrido()
     P = prueba[prueba.h == h]
     u = P.umbral.iloc[0]
@@ -800,11 +836,18 @@ def fig_serie_hibrido(h):
     fig.add_trace(go.Bar(x=P.fecha, y=P.y, name="lluvia observada", marker_color=np.where(P.y > u, "#E3A33B", "#9CC2B4"),
                          hovertemplate="%{x|%d/%m/%Y}: %{y:.1f} mm<extra>observada</extra>"))
     fig.add_trace(go.Scatter(x=P.fecha, y=P["Climatología"], name="climatología", line=dict(color=GRIS, width=1.5, dash="dash")))
-    fig.add_trace(go.Scatter(x=P.fecha, y=P["Híbrido"], name="híbrido", line=dict(color=TINTA, width=2.4),
+    if modelo != "Híbrido":
+        fig.add_trace(go.Scatter(x=P.fecha, y=P[modelo].clip(lower=0), name=modelo.lower(),
+                                 line=dict(color=COLOR_MM.get(modelo, SOL), width=2.2),
+                                 hovertemplate="%{x|%d/%m/%Y}: %{y:.1f} mm<extra>" + modelo + "</extra>"))
+    fig.add_trace(go.Scatter(x=P.fecha, y=P["Híbrido"], name="híbrido", line=dict(color=TINTA, width=2.4 if modelo == "Híbrido" else 1.2),
+                             opacity=1 if modelo == "Híbrido" else 0.55,
                              hovertemplate="%{x|%d/%m/%Y}: %{y:.1f} mm<extra>híbrido</extra>"))
     fig.add_hline(y=u, line_dash="dot", line_color=TIERRA, annotation_text=f"umbral de aguacero ({es(u)} mm)", annotation_position="top left")
     cob = np.mean((P.y >= P.inf95) & (P.y <= P.sup95))
-    fig.update_layout(title=f"Prueba 2021–2025 a {h} semana{'s' if h > 1 else ''}<br><sup>El intervalo del 95 % contuvo la lluvia real en el {cob:.0%} de las semanas</sup>",
+    det = sum(1 for a, b in zip(P.y, P[modelo]) if a > u and b > u); tot = int((P.y > u).sum())
+    extra = f" · {modelo}: detectó {det} de {tot} aguaceros, MSE {es(float(np.mean((P.y - P[modelo].clip(lower=0)) ** 2)))} mm²" if modelo != "Híbrido" else ""
+    fig.update_layout(title=f"Prueba 2021–2025 a {h} semana{'s' if h > 1 else ''}{extra}<br><sup>El intervalo del 95 % contuvo la lluvia real en el {cob:.0%} de las semanas</sup>",
                       yaxis_title="mm en la semana", height=470, bargap=0.1, legend=LEYENDA_ABAJO, title_font_size=15)
     return fig
 
@@ -1112,6 +1155,25 @@ p { max-width: 68ch; }
 .tabla-mse th.sel, .tabla-mse td.sel { outline: 2px solid #E3B04B; outline-offset: -2px; }
 .tabla-mse th.grupo { text-align: center; background: #1F6F78; color: #F4F1EA; border-bottom: none; }
 .tabla-mse th.grupo--prueba { background: #A5673F; }
+.tabla-mapa td.separador { background: #EEF3EF; font-weight: 700; color: #17332E; }
+.tabla-mapa tr.sel td { background: #DDEFE6; }
+.tabla-mapa tr.grupo td { font-style: italic; color: #4A5A55; }
+.tabla-mapa td:nth-child(3) { min-width: 220px; }
+.tabla-mapa td:nth-child(-n+3), .tabla-mapa th:nth-child(-n+3) { text-align: left; }
+.tabla-mapa td.separador { text-align: left; }
+.tabla-pesos td:nth-child(-n+4), .tabla-pesos th:nth-child(-n+4) { text-align: left; }
+.tabla-rubrica tr.sel td { background: #DDEFE6; }
+.tabla-rubrica td:first-child, .tabla-rubrica th:first-child { text-align: left; }
+td.nivel { font-weight: 700; text-align: left; }
+.nivel--excelente { color: #1F6F4E; } .nivel--bueno { color: #1F6F78; } .nivel--aceptable { color: #B7791F; } .nivel--insuficiente { color: #A4452C; }
+.grilla--calendario { grid-template-columns: 3fr 2fr; }
+.indicadores--final { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 12px 0 18px; }
+@media (max-width: 900px) { .grilla--calendario { grid-template-columns: 1fr; } }
+.ficha { display: grid; grid-template-columns: minmax(120px, 42%) 1fr; gap: 6px 14px; margin: 8px 0 0; font-size: .92rem; }
+.ficha dt { color: #4A5A55; } .ficha dd { margin: 0; font-weight: 600; }
+.veredicto-fecha { font-weight: 700; padding: 8px 12px; border-radius: 8px; margin: 6px 0 10px; }
+.veredicto-fecha--si { background: #DDEFE6; color: #1F6F4E; } .veredicto-fecha--medio { background: #FBEFD5; color: #8A5A12; }
+.veredicto-fecha--no { background: #F6E0D8; color: #A4452C; }
 .veredicto { background: #17332E; color: #F4F1EA; border-radius: 10px; padding: 14px 18px; margin-top: 12px; max-width: none; }
 .veredicto b { color: #E3B04B; }
 .tabla-metricas td.si { color: #1F6F78; font-weight: 700; text-align: left; }
@@ -1291,23 +1353,15 @@ def tab_modelos():
             [{"label": str(h), "value": h} for h in H_HIB], 1, id="mod-h", className="segmento",
             labelClassName="segmento__opcion", inputClassName="segmento__radio"),
             "Semanas entre la emisión del pronóstico (lunes) y la semana que se predice. Horizonte confiable: 4."),
-        html.P("Primera parte: cuántos mm lloverá (modelo híbrido). Resultados del capítulo 5 del Jupyter Book.", className="nota"),
-        html.Div("¿Semana seca?", className="rail__grupo"),
-        control("Semana seca si llueve menos de", dcc.Dropdown(
-            [{"label": f"{u:g} mm", "value": u} for u in (5.0, 10.0, 20.0)], UMBRAL_DEFECTO, id="mod-umbral",
-            clearable=False)),
-        control("Modelo en detalle", dcc.Dropdown(
-            [{"label": NOMBRES["logistica"], "value": "logistica"}, {"label": NOMBRES["knn"], "value": "knn"}],
-            "logistica", id="mod-modelo", clearable=False)),
-        control("Umbral de probabilidad", dcc.Slider(0.1, 0.9, 0.05, value=0.5, id="mod-prob",
-                                                    marks={0.1: "0,1", 0.5: "0,5", 0.9: "0,9"},
-                                                    tooltip={"placement": "bottom"}),
-                "Desde qué probabilidad se declara la semana como seca."),
-        html.P("La primera vez que se elige una combinación, los clasificadores se entrenan con validación cruzada; "
-               "tarda unos segundos.", className="nota"),
+        html.Div("Parte 1 · ¿Cuántos mm?", className="rail__grupo"),
+        control("Ver pronóstico de", dcc.Dropdown(
+            [{"label": "Híbrido SVR + RF (elegido)" if m == "Híbrido" else m, "value": m} for m in MODELOS_MM + REFERENCIAS_MM],
+            "Híbrido", id="hib-modelo", clearable=False),
+            "Cualquiera de los 7 modelos de milímetros en la gráfica de la prueba 2021–2025."),
     ], className="rail")
     parte_mm = html.Div([
-        html.H2("1. ¿Cuántos milímetros lloverá? El modelo híbrido", className="titulo-seccion"),
+        html.Div(id="hib-mapa", className="panel"),
+        html.H2("1. ¿Cuántos milímetros lloverá? 7 modelos comparados, gana el híbrido", className="titulo-seccion"),
         html.Div([html.Div(panel_criterio(), className="panel"), html.Div(id="hib-dm", className="panel")],
                  className="grilla grilla--resumen"),
         html.Div(id="hib-tabla", className="panel"),
@@ -1316,16 +1370,7 @@ def tab_modelos():
         grafica("hib-roc"),
         grafica("hib-anio"),
     ])
-    parte_seca = dcc.Loading(html.Div([
-        html.H2("2. ¿Será una semana seca? Regresión logística y KNN", className="titulo-seccion"),
-        html.Div([html.Div(id="mod-tabla", className="panel"), html.Div(id="mod-fuga", className="panel")],
-                 className="grilla grilla--resumen"),
-        grafica("mod-roc"),
-        html.Div([grafica("mod-validacion"), grafica("mod-brecha")], className="grilla"),
-        html.Div([grafica("mod-confusion"), grafica("mod-calibracion")], className="grilla"),
-        html.Div([grafica("mod-extra"), grafica("mod-tiempo")], className="grilla"),
-    ]), type="circle", color=RIO)
-    return html.Div([rail, html.Div([parte_mm, parte_seca], className="modelos")], className="con-rail")
+    return html.Div([rail, html.Div([parte_mm], className="modelos")], className="con-rail")
 
 
 def lista_fuga(res):
@@ -1379,31 +1424,273 @@ def tabla_metricas(res, prob):
 @app.callback(
     Output("hib-tabla", "children"), Output("hib-dm", "children"), Output("hib-mse", "figure"),
     Output("hib-aguaceros", "children"), Output("hib-serie", "figure"), Output("hib-roc", "figure"),
-    Output("hib-anio", "figure"),
-    Input("mod-h", "value"))
-def actualizar_hibrido(h):
+    Output("hib-anio", "figure"), Output("hib-mapa", "children"),
+    Input("mod-h", "value"), Input("hib-modelo", "value"))
+def actualizar_hibrido(h, modelo):
     h = int(h) if h in H_HIB else 1
+    modelo = modelo if modelo in MODELOS_MM + REFERENCIAS_MM else "Híbrido"
     return (tabla_mse_html(h), tabla_dm_html(h), fig_mse_horizontes(h), tabla_aguaceros_html(h),
-            fig_serie_hibrido(h), fig_roc_hibrido(h), fig_aguaceros_anio(h))
+            fig_serie_hibrido(h, modelo), fig_roc_hibrido(h), fig_aguaceros_anio(h), tabla_mapa_html(h))
 
 
-@app.callback(
-    Output("mod-tabla", "children"), Output("mod-fuga", "children"), Output("mod-roc", "figure"),
-    Output("mod-validacion", "figure"), Output("mod-brecha", "figure"), Output("mod-confusion", "figure"),
-    Output("mod-calibracion", "figure"), Output("mod-extra", "figure"), Output("mod-tiempo", "figure"),
-    Input("mod-h", "value"), Input("mod-umbral", "value"), Input("mod-modelo", "value"), Input("mod-prob", "value"))
-def actualizar_modelos(h, umbral, clave, prob):
-    res = entrenar(int(h or 1), float(umbral or UMBRAL_DEFECTO))
-    clave = clave if clave in ("logistica", "knn") else "logistica"
-    prob = 0.5 if prob is None else float(prob)
-    if clave == "logistica":
-        extra = fig_coeficientes(res)
+# --------------------------------------------------------------------------
+# Análisis final (capítulo 7 del Jupyter Book)
+# --------------------------------------------------------------------------
+PESOS_RUBRICA = [("C1", "Error de la lluvia semanal", "MSE", "Validación 1981–2020", 25),
+                 ("C2", "Error de la lluvia semanal", "MSE", "Prueba 2021–2025", 15),
+                 ("C3", "Detección de aguaceros", "CSI", "Validación", 15),
+                 ("C4", "Detección de aguaceros", "CSI", "Prueba", 15),
+                 ("C5", "Distinguir semanas secas", "AUC", "Prueba", 10),
+                 ("C6", "Distinguir semanas de aguacero", "AUC", "Prueba", 10),
+                 ("C7", "Mejora real frente a la climatología", "Diebold-Mariano", "Prueba", 10)]
+MODELOS_RUB = ["Climatología", "Dummy (promedio)", "Persistencia", "SVR lineal", "Random forest", "Gradient boosting", "Híbrido"]
+
+
+@lru_cache(maxsize=1)
+def cargar_final():
+    leer = lambda n: pd.read_csv(_buscar("data", "processed", n))
+    return {"punt": leer("rubrica_puntajes.csv"), "sens": leer("rubrica_sensibilidad.csv").rename(columns={"Unnamed: 0": "modelo"}),
+            "cal": leer("calendario_siembra.csv"), "ene": leer("siembra_enero_escenarios.csv"),
+            "ag": leer("aguaceros_mejor_fecha.csv"), "aviso": leer("aguaceros_temporada.csv")}
+
+
+def nivel_rubrica(x):
+    return "Excelente" if x >= 90 else "Bueno" if x >= 75 else "Aceptable" if x >= 60 else "Insuficiente"
+
+
+def puntajes_rubrica(hsel):
+    P = cargar_final()["punt"]
+    crit = [c for c in P.columns if c[:2] in {f"C{i}" for i in range(1, 8)}]
+    T = (P.groupby("modelo")[crit + ["Total"]].mean() if hsel == "prom" else P[P.h == int(hsel)].set_index("modelo")[crit + ["Total"]])
+    return T.loc[MODELOS_RUB].sort_values("Total", ascending=False), crit
+
+
+def tabla_pesos_html():
+    filas = [html.Tr([html.Td(c), html.Td(n), html.Td(m), html.Td(p), html.Td(f"{w} %")]) for c, n, m, p, w in PESOS_RUBRICA]
+    return [html.H3("Criterios y pesos (fijados antes de calcular)", className="subtitulo"),
+            html.Div(html.Table([html.Thead(html.Tr([html.Th(x) for x in ("", "Criterio", "Métrica", "Periodo", "Peso")])),
+                                 html.Tbody(filas)], className="tabla-metricas tabla-pesos"), className="tabla-scroll"),
+            html.P(["Cada métrica se compara con ", html.B("el mejor de los siete modelos"), " en ese horizonte: error → 100 × MSE del "
+                    "mejor / MSE del modelo; aguaceros → 100 × CSI / CSI del mejor; AUC → 100 × (AUC − 0,5) / (mejor − 0,5); "
+                    "C7 → 100 si mejora con significancia a la climatología, 50 si no se distinguen, 0 si es peor. "
+                    "Niveles: Excelente ≥ 90 · Bueno 75–90 · Aceptable 60–75 · Insuficiente < 60."], className="nota")]
+
+
+def tabla_rubrica_html(hsel):
+    T, crit = puntajes_rubrica(hsel)
+    cab = html.Thead(html.Tr([html.Th("Modelo")] + [html.Th(c.split(" ")[0], title=c) for c in crit] + [html.Th("Total"), html.Th("Nivel")]))
+    filas = []
+    for m, f in T.iterrows():
+        filas.append(html.Tr([html.Td(html.B(m) if m == "Híbrido" else m)] + [html.Td(es(f[c], 0)) for c in crit] +
+                             [html.Td(html.B(es(f.Total, 1))), html.Td(nivel_rubrica(f.Total), className=f"nivel nivel--{nivel_rubrica(f.Total).lower()}")],
+                             className="sel" if m == "Híbrido" else ""))
+    titulo = "promedio de 1 a 4 semanas" if hsel == "prom" else f"a {hsel} semana{'s' if int(hsel) > 1 else ''}"
+    return [html.H3(f"Rúbrica final · {titulo}", className="subtitulo"),
+            html.Div(html.Table([cab, html.Tbody(filas)], className="tabla-metricas tabla-rubrica"), className="tabla-scroll"),
+            html.P("Puntos de 0 a 100 por criterio; el total pondera con los pesos de la tabla de criterios. Pasa el cursor sobre C1–C7 "
+                   "para ver el nombre del criterio.", className="nota")]
+
+
+def fig_rubrica(hsel):
+    T, _ = puntajes_rubrica(hsel)
+    T = T.iloc[::-1]
+    fig = go.Figure(go.Bar(x=T.Total, y=T.index, orientation="h", marker_color=[COLOR_MM.get(m, GRIS) for m in T.index],
+                           text=[f"{es(v, 1)} · {nivel_rubrica(v)}" for v in T.Total], textposition="outside", cliponaxis=False,
+                           hovertemplate="%{y}: %{x:.1f}<extra></extra>"))
+    for x in (60, 75, 90):
+        fig.add_vline(x=x, line_dash="dot", line_color="#9AA9A3")
+    fig.update_xaxes(range=[0, 140], title_text="puntaje de la rúbrica (0–100)", tickvals=[0, 25, 50, 60, 75, 90, 100])
+    fig.update_layout(title="Puntaje total de cada modelo<br><sup>Líneas: 60 Aceptable · 75 Bueno · 90 Excelente</sup>",
+                      height=440, margin=dict(l=150), showlegend=False)
+    return fig
+
+
+def tabla_sensibilidad_html():
+    S = cargar_final()["sens"].set_index("modelo")
+    cols = ["Pesos de la rúbrica", "Pesos iguales", "Solo prueba 2021-2025", "Solo error (MSE)", "Puesto promedio"]
+    filas = [html.Tr([html.Td(html.B(m) if m == "Híbrido" else m)] + [html.Td(f"{int(f[c])}°" if c != "Puesto promedio" else es(f[c], 2)) for c in cols],
+                     className="sel" if m == "Híbrido" else "") for m, f in S.iterrows()]
+    return [html.H3("¿Cambia el ganador si cambian los pesos?", className="subtitulo"),
+            html.Div(html.Table([html.Thead(html.Tr([html.Th("Modelo")] + [html.Th(c) for c in cols])), html.Tbody(filas)],
+                                className="tabla-metricas"), className="tabla-scroll"),
+            html.P("Con pesos iguales el híbrido sigue primero; calificando solo con la prueba gana el gradient boosting y solo con "
+                   "el error gana el SVR. Por eso no se elige con una sola métrica: en promedio, el híbrido tiene el mejor puesto.",
+                   className="nota")]
+
+
+def resumen_enero():
+    E = cargar_final()["ene"]; m = E[E.caso == "P_q500"]
+    return {"rend": m.rendimiento.mean(), "perder": (m.rendimiento < 2).mean(), "lluvia": m.lluvia.mean(), "etc": m.ETc.mean(),
+            "eta": m.ETa.mean(), "riego": (m.ETc - m.ETa).mean(), "n": m.traza.nunique(),
+            "rend_hum": E[E.caso == "P_q950"].rendimiento.mean()}
+
+
+def indicadores_enero():
+    r = resumen_enero()
+    datos = [(f"{es(r['rend'], 2)} t/ha", f"rendimiento esperado en secano (con riego al 100 %: 8 t/ha)", r["rend"] / 8),
+             (f"{r['perder']:.0%}", f"de los {r['n']} escenarios de lluvia dan menos de 2 t/ha", r["perder"]),
+             (f"{es(r['lluvia'])} de {es(r['etc'])} mm", "lluvia de la temporada frente a lo que pide el cultivo", r["lluvia"] / r["etc"]),
+             (f"{es(10 * r['riego'])} m³/ha", "de riego harían falta para llegar a 8 t/ha", 1.0)]
+    return html.Div([html.Div([html.Div(html.Div(className="regla__nivel", style={"height": f"{min(max(v, 0.03), 1) * 100:.0f}%"}), className="regla"),
+                               html.Div([html.Span(a, className="indicador__valor"), html.Span(b, className="indicador__texto")])],
+                              className="indicador") for a, b, v in datos], className="indicadores indicadores--final")
+
+
+def fig_enero():
+    E = cargar_final()["ene"]; m = E[E.caso == "P_q500"]
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Rendimiento en los escenarios de lluvia", "Agua en la temporada (promedio)"))
+    fig.add_trace(go.Histogram(x=m.rendimiento, xbins=dict(start=0, end=8.5, size=0.5), marker_color=SOL, name="escenarios",
+                               hovertemplate="%{x} t/ha: %{y} años<extra></extra>"), 1, 1)
+    fig.add_vline(x=8, line_dash="dash", line_color=TINTA, row=1, col=1, annotation_text="con riego: 8 t/ha")
+    v = [m.ETc.mean(), m.ETa.mean(), m.lluvia.mean()]
+    fig.add_trace(go.Bar(x=["Pide el cultivo (ETc)", "Logra usar (ETa)", "Lluvia"], y=v, marker_color=[GRIS, LLUVIA, "#8FB9A8"],
+                         text=[f"{es(x)} mm" for x in v], textposition="outside", name="agua"), 1, 2)
+    fig.update_xaxes(title_text="t/ha", range=[-0.2, 8.6], row=1, col=1)
+    fig.update_yaxes(title_text="escenarios (años)", row=1, col=1)
+    fig.update_yaxes(range=[0, max(v) * 1.2], row=1, col=2)
+    fig.update_layout(title="Siembra el 1 de enero de 2026 · maíz de 4 meses en secano", height=400, showlegend=False)
+    return fig
+
+
+def fig_calendario_siembra(sel):
+    C = cargar_final()["cal"]
+    x = C.siembra
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=x, y=C.prob_perder * 100, name="% de años con pérdida (< 2 t/ha)", marker_color="rgba(185,139,115,0.30)",
+                         hovertemplate="%{x}: %{y:.0f} % de años con pérdida<extra></extra>"), secondary_y=True)
+    fig.add_trace(go.Scatter(x=x, y=C.p90, line=dict(width=0), showlegend=False, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=C.p10, fill="tonexty", fillcolor="rgba(214,158,46,0.18)", line=dict(width=0),
+                             name="80 % de los años (p10–p90)", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=C.rend_medio, mode="lines+markers", line=dict(color=TINTA, width=2.6), name="rendimiento medio en secano",
+                             hovertemplate="%{x}: %{y:.2f} t/ha<extra></extra>"))
+    i = C.index[C.siembra == sel]
+    if len(i):
+        fig.add_trace(go.Scatter(x=[sel], y=[C.loc[i[0], "rend_medio"]], mode="markers", marker=dict(size=16, color=SOL, line=dict(color=TINTA, width=2)),
+                                 name=f"fecha elegida: {sel}"))
+    fig.add_hline(y=8, line_dash="dash", line_color=LLUVIA, annotation_text="con riego al 100 %: 8 t/ha", annotation_position="top left")
+    fig.add_vrect(x0="15 jul", x1="1 sep", fillcolor="rgba(31,111,120,0.08)", line_width=0, annotation_text="ventana recomendada",
+                  annotation_position="top left")
+    fig.update_yaxes(title_text="t/ha", range=[0, 9], secondary_y=False)
+    fig.update_yaxes(title_text="% de años con pérdida", range=[0, 300], tickvals=[0, 25, 50, 75, 100], showgrid=False, secondary_y=True)
+    fig.update_layout(title="Maíz de 4 meses en secano según la fecha de siembra (1981–2025)", height=470, legend=LEYENDA_ABAJO,
+                      xaxis=dict(tickangle=-60))
+    return fig
+
+
+def panel_fecha(sel):
+    C = cargar_final()["cal"].set_index("siembra")
+    sel = sel if sel in C.index else C.index[0]
+    f, mejor, ene = C.loc[sel], C.rend_medio.idxmax(), C.iloc[0]
+    if f.rend_medio >= 6:
+        veredicto, clase = "Sembrar: dentro de la mejor época.", "si"
+    elif f.rend_medio >= 3:
+        veredicto, clase = "Solo con riego de apoyo: alto riesgo en secano.", "medio"
     else:
-        extra = fig_curva_validacion(res, "logistica")
-        extra.update_layout(title="Referencia: curva de validación de la regresión logística")
-    return (tabla_metricas(res, prob), lista_fuga(res), fig_roc_pr(res), fig_curva_validacion(res, clave),
-            fig_brecha(res), fig_confusion(res["y_test"], res["modelos"][clave]["p_test"], prob), fig_calibracion(res),
-            extra, fig_linea_tiempo(res, clave))
+        veredicto, clase = "No sembrar en secano.", "no"
+    dl = [("Rendimiento medio", f"{es(f.rend_medio, 2)} t/ha ({f.rend_medio / 8:.0%} del potencial con riego)"),
+          ("Año malo / año bueno (p10–p90)", f"{es(f.p10, 2)} – {es(f.p90, 2)} t/ha"),
+          ("Años con pérdida (< 2 t/ha)", f"{f.prob_perder:.0%}"),
+          ("Lluvia de la temporada", f"{es(f.lluvia)} mm, de los cuales {es(f.lluvia_perdida)} mm no caben en el suelo"),
+          ("Frente a la mejor fecha", "es la mejor fecha del año" if sel == mejor else
+           f"{mejor}: {es(C.loc[mejor, 'rend_medio'], 2)} t/ha ({es(C.loc[mejor, 'rend_medio'] - f.rend_medio, 2)} t/ha menos)"),
+          ("Frente al 1 de enero", "es la fecha de referencia" if sel == C.index[0] else
+           f"{es(f.rend_medio - ene.rend_medio, 2)} t/ha más por hectárea")]
+    return [html.H3(f"Siembra el {sel}", className="subtitulo"),
+            html.P(veredicto, className=f"veredicto-fecha veredicto-fecha--{clase}"),
+            html.Dl([x for a, b in dl for x in (html.Dt(a), html.Dd(b))], className="ficha")]
+
+
+def fig_aguaceros_final(h):
+    A, V = cargar_final()["ag"], cargar_final()["aviso"]
+    tot = A[["lluvia", "lluvia_aguacero"]].mean()
+    pv = V[V.h == h].set_index("modelo").POD.reindex(MODELOS_RUB) * 100
+    fig = make_subplots(rows=1, cols=2, column_widths=[0.36, 0.64], horizontal_spacing=0.2,
+                        subplot_titles=(f"Lluvia de la temporada (siembra {A.siembra.iloc[0]})",
+                                        f"Aguaceros de jul–nov 2021–2025 avisados a {h} semana{'s' if h > 1 else ''}"))
+    v = [tot.lluvia - tot.lluvia_aguacero, tot.lluvia_aguacero]
+    fig.add_trace(go.Bar(x=["semanas normales", "semanas de aguacero"], y=v, marker_color=["#8FB9A8", "#E3A33B"],
+                         text=[f"{es(a)} mm ({a / sum(v):.0%})" for a in v], textposition="outside"), 1, 1)
+    fig.add_trace(go.Bar(y=pv.index, x=pv.values, orientation="h", marker_color=[COLOR_MM.get(m, GRIS) for m in pv.index],
+                         text=[f"{a:.0f} %" for a in pv.values], textposition="outside"), 1, 2)
+    fig.update_yaxes(range=[0, max(v) * 1.25], row=1, col=1)
+    fig.update_xaxes(range=[0, 100], title_text="% de aguaceros avisados", row=1, col=2)
+    fig.update_yaxes(autorange="reversed", row=1, col=2)
+    fig.update_layout(height=420, showlegend=False, margin=dict(l=40))
+    fig.update_annotations(font_size=13)
+    return fig
+
+
+def panel_aguaceros_texto():
+    A = cargar_final()["ag"]; V = cargar_final()["aviso"]
+    t = A[["lluvia", "lluvia_aguacero", "perdida", "perdida_aguacero"]].mean()
+    con, sin = A[A.aguacero_floracion], A[~A.aguacero_floracion]
+    pod = V.groupby("modelo").POD.mean()
+    return [html.H3("Por qué los aguaceros importan para decidir", className="subtitulo"),
+            html.Ul([
+                html.Li([html.B("Son la mitad del agua: "), f"{es(A.semanas_aguacero.mean(), 1)} de 17 semanas traen {es(t.lluvia_aguacero)} de "
+                         f"{es(t.lluvia)} mm ({t.lluvia_aguacero / t.lluvia:.0%}) de la lluvia de la temporada."]),
+                html.Li([html.B("Y casi toda el agua que se pierde: "), f"el suelo no puede guardar {es(t.perdida)} mm; el "
+                         f"{t.perdida_aguacero / t.perdida:.0%} se pierde en semanas de aguacero, unos {es(10 * t.perdida_aguacero)} m³ por hectárea."]),
+                html.Li([html.B("Si coinciden con la floración, rinden más: "), f"{es(con.rendimiento.mean(), 2)} t/ha ({len(con)} años) "
+                         f"frente a {es(sin.rendimiento.mean(), 2)} t/ha ({len(sin)} años)."]),
+                html.Li([html.B("Solo el ML los anticipa: "), f"la climatología avisa el {pod['Climatología']:.0%}; el híbrido, el "
+                         f"{pod['Híbrido']:.0%} en promedio de 1 a 4 semanas, el más alto de los siete modelos."]),
+            ], className="pasos"),
+            html.H3("Qué hacer con el aviso del híbrido", className="subtitulo"),
+            html.Ol([html.Li("Preparar la captación y dejar espacio en el reservorio para guardar parte de esa agua."),
+                     html.Li("Ajustar la fecha de siembra dentro de la ventana: sembrar justo antes de lluvias anunciadas; "
+                             "esperar si el suelo ya está saturado."),
+                     html.Li("No abonar antes de un aguacero anunciado, para que la lluvia no lave el nitrógeno."),
+                     html.Li("Si no se anuncian aguaceros para la floración, usar el agua guardada para regarla.")], className="pasos"),
+            html.P("Límite: cerca de dos de cada tres alertas no se cumplen (FAR 0,63–0,65). Las alertas sirven para acciones "
+                   "baratas y reversibles, no para decisiones irreversibles.", className="nota")]
+
+
+def tab_final():
+    C = cargar_final()["cal"]
+    rail = html.Aside([
+        control("Horizonte de la rúbrica", dcc.RadioItems(
+            [{"label": "1–4", "value": "prom"}] + [{"label": str(h), "value": str(h)} for h in H_HIB], "prom", id="fin-h",
+            className="segmento", labelClassName="segmento__opcion", inputClassName="segmento__radio"),
+            "Promedio de los cuatro horizontes o uno solo. También cambia el horizonte del aviso de aguaceros."),
+        control("Fecha de siembra", dcc.Dropdown([{"label": s, "value": s} for s in C.siembra], "1 ene", id="fin-fecha", clearable=False),
+                "Maíz híbrido de 4 meses (8 t/ha con riego), en secano."),
+        html.P("Resultados del capítulo 7 del Jupyter Book: balance hídrico diario FAO-56 y respuesta del rendimiento al "
+               "agua de FAO-33, con la lluvia y la ET0 de 1981–2025.", className="nota"),
+    ], className="rail")
+    r = resumen_enero()
+    mejor = C.loc[C.rend_medio.idxmax()]
+    cuerpo = html.Div([
+        html.H2("1. Rúbrica: ¿qué tan bueno es el modelo elegido?", className="titulo-seccion"),
+        html.Div(id="fin-rubrica", className="panel"),
+        html.Div([html.Div(tabla_pesos_html(), className="panel"), grafica("fin-rubrica-fig")], className="grilla"),
+        html.Div(tabla_sensibilidad_html(), className="panel"),
+        html.H2("2. ¿Y si sembramos maíz el 1 de enero de 2026?", className="titulo-seccion"),
+        html.P(["Pronóstico con el ", html.B("híbrido"), " para las semanas 1 a 4 (mediana de 0 mm por semana) y lluvias de "
+                "1981–2025 como escenarios para el resto del ciclo. Datos hasta el 31/12/2025."], className="nota"),
+        indicadores_enero(),
+        grafica("fin-enero"),
+        html.H2("3. ¿Cuándo conviene sembrar?", className="titulo-seccion"),
+        html.Div([grafica("fin-calendario"), html.Div(id="fin-ficha", className="panel")], className="grilla grilla--calendario"),
+        html.P([html.B(f"Recomendación: sembrar entre el 15 de julio y el 1 de septiembre; la mejor fecha es el {mejor.siembra} "),
+                f"({es(mejor.rend_medio, 2)} t/ha, {mejor.rend_medio / 8:.0%} del potencial, pérdida en el {mejor.prob_perder:.0%} de los años). "
+                "La floración cae en octubre, el mes más lluvioso, y la cosecha en diciembre, con tiempo seco. "
+                f"Sembrar el 1 de enero en secano da {es(r['rend'], 2)} t/ha."], className="veredicto"),
+        html.H2("4. Los aguaceros y la decisión", className="titulo-seccion"),
+        grafica("fin-aguaceros"),
+        html.Div(panel_aguaceros_texto(), className="panel"),
+    ], className="modelos")
+    return html.Div([rail, cuerpo], className="con-rail")
+
+
+@app.callback(Output("fin-rubrica", "children"), Output("fin-rubrica-fig", "figure"), Output("fin-aguaceros", "figure"),
+              Output("fin-calendario", "figure"), Output("fin-ficha", "children"), Output("fin-enero", "figure"),
+              Input("fin-h", "value"), Input("fin-fecha", "value"))
+def actualizar_final(hsel, fecha):
+    hsel = hsel if hsel in ("prom", "1", "2", "3", "4") else "prom"
+    h_aviso = 1 if hsel == "prom" else int(hsel)
+    fecha = fecha or "1 ene"
+    return (tabla_rubrica_html(hsel), fig_rubrica(hsel), fig_aguaceros_final(h_aviso), fig_calendario_siembra(fecha), panel_fecha(fecha), fig_enero())
 
 
 # --------------------------------------------------------------------------
@@ -1425,6 +1712,8 @@ app.layout = html.Div([
                  dcc.Tab(tab_eda(), label="Exploración de datos", value="eda", className="pestana",
                          selected_className="pestana--activa"),
                  dcc.Tab(tab_modelos(), label="Modelos", value="modelos", className="pestana",
+                         selected_className="pestana--activa"),
+                 dcc.Tab(tab_final(), label="Análisis final", value="final", className="pestana",
                          selected_className="pestana--activa"),
              ]),
     html.Footer("Edwin Yunis y Jairo Serrano · Maestría en Ingeniería Industrial · Machine Learning, Dr. Lihki Rubio. "
